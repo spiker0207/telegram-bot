@@ -205,16 +205,36 @@ async def catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_categories(update, context, lang)
         return
 
-    if data_str == "back_prods":
-        cat_id = context.user_data.get("current_cat")
-        if cat_id:
-            query.data = f"cat_{cat_id}"
-            await catalog_callback(update, context)
+    if data_str.startswith("back_prods_"):
+        cat_id = data_str.split("back_prods_", 1)[1]
+        context.user_data["current_cat"] = cat_id
+        products = db["products"].get(cat_id, {})
+        keyboard = []
+        for prod_id, prod in products.items():
+            name = prod["name"].get(lang, prod["name"].get("uz", prod_id))
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"prod_{cat_id}|{prod_id}")])
+        keyboard.append([InlineKeyboardButton(t("back_categories", lang), callback_data="back_cats")])
+        text = t("choose_product", lang) if products else t("no_products", lang)
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data_str.startswith("cat_"):
+        cat_id = data_str.split("_", 1)[1]
+        context.user_data["current_cat"] = cat_id
+        products = db["products"].get(cat_id, {})
+        keyboard = []
+        for prod_id, prod in products.items():
+            name = prod["name"].get(lang, prod["name"].get("uz", prod_id))
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"prod_{cat_id}|{prod_id}")])
+        keyboard.append([InlineKeyboardButton(t("back_categories", lang), callback_data="back_cats")])
+        text = t("choose_product", lang) if products else t("no_products", lang)
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if data_str.startswith("prod_"):
-        prod_id = data_str.split("_", 1)[1]
-        cat_id = context.user_data.get("current_cat")
+        rest = data_str.split("_", 1)[1]
+        cat_id, prod_id = rest.split("|", 1)
+        context.user_data["current_cat"] = cat_id
         prod = db["products"].get(cat_id, {}).get(prod_id)
         if not prod:
             await query.edit_message_text("Mahsulot topilmadi.")
@@ -225,7 +245,7 @@ async def catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image = prod.get("image")
         caption = f"🏷 <b>{name}</b>\n\n{t('usage', lang)}: {usage}\n\n{t('price', lang)}: <b>{price}</b>"
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("back_products", lang), callback_data="back_prods")],
+            [InlineKeyboardButton(t("back_products", lang), callback_data=f"back_prods_{cat_id}")],
             [InlineKeyboardButton(t("back_categories", lang), callback_data="back_cats")],
         ])
         if image:
