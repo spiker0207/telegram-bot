@@ -3,7 +3,7 @@ import json
 import os
 import re
 import time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, MessageHandler, filters, ConversationHandler
@@ -14,13 +14,18 @@ logger = logging.getLogger(__name__)
 
 ADMIN_ID = 5988569293
 
-(ADD_CAT_NAME_UZ, ADD_CAT_NAME_RU, ADD_CAT_NAME_EN,
- ADD_ITEM_NAME_UZ, ADD_ITEM_NAME_RU, ADD_ITEM_NAME_EN,
- ADD_ITEM_PRICE_UZ, ADD_ITEM_PRICE_RU, ADD_ITEM_PRICE_EN,
- ADD_ITEM_USAGE_UZ, ADD_ITEM_USAGE_RU, ADD_ITEM_USAGE_EN,
- ADD_ITEM_IMAGE) = range(13)
+# ── Conversation states ───────────────────────────────────────────────────────
+(
+    REG_LANG, REG_FIRST_NAME, REG_LAST_NAME, REG_PHONE,
+    ADD_CAT_NAME_UZ, ADD_CAT_NAME_RU, ADD_CAT_NAME_EN,
+    ADD_ITEM_NAME_UZ, ADD_ITEM_NAME_RU, ADD_ITEM_NAME_EN,
+    ADD_ITEM_PRICE_UZ, ADD_ITEM_PRICE_RU, ADD_ITEM_PRICE_EN,
+    ADD_ITEM_USAGE_UZ, ADD_ITEM_USAGE_RU, ADD_ITEM_USAGE_EN,
+    ADD_ITEM_IMAGE
+) = range(17)
 
 DATA_FILE = "db.json"
+USERS_FILE = "users.json"
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -32,10 +37,29 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_users(users):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def is_registered(user_id):
+    users = load_users()
+    return str(user_id) in users
+
 LANGUAGES = {"uz": "🇺🇿 O'zbek", "ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
 
 TEXTS = {
     "welcome":         {"uz": "👋 Xush kelibsiz! Tilni tanlang:", "ru": "👋 Добро пожаловать! Выберите язык:", "en": "👋 Welcome! Choose language:"},
+    "ask_first_name":  {"uz": "👤 Ismingizni yozing:", "ru": "👤 Введите ваше имя:", "en": "👤 Enter your first name:"},
+    "ask_last_name":   {"uz": "👤 Familiyangizni yozing:", "ru": "👤 Введите вашу фамилию:", "en": "👤 Enter your last name:"},
+    "ask_phone":       {"uz": "📱 Telefon raqamingizni yozing:\n(masalan: +998901234567)", "ru": "📱 Введите ваш номер телефона:\n(например: +998901234567)", "en": "📱 Enter your phone number:\n(e.g. +998901234567)"},
+    "invalid_phone":   {"uz": "❌ Noto'g'ri format! Qaytadan yozing:\n(masalan: +998901234567)", "ru": "❌ Неверный формат! Попробуйте снова:\n(например: +998901234567)", "en": "❌ Invalid format! Try again:\n(e.g. +998901234567)"},
+    "reg_done":        {"uz": "✅ Ro'yxatdan o'tdingiz!", "ru": "✅ Вы успешно зарегистрированы!", "en": "✅ Registration complete!"},
     "choose_category": {"uz": "📦 Kategoriyani tanlang:", "ru": "📦 Выберите категорию:", "en": "📦 Choose a category:"},
     "choose_product":  {"uz": "🛒 Mahsulotni tanlang:", "ru": "🛒 Выберите товар:", "en": "🛒 Choose a product:"},
     "price":           {"uz": "💰 Narxi", "ru": "💰 Цена", "en": "💰 Price"},
@@ -53,9 +77,76 @@ def t(key, lang):
 def get_lang(context):
     return context.user_data.get("lang", "uz")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# RO'YXATDAN O'TISH
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(label, callback_data=f"lang_{code}")] for code, label in LANGUAGES.items()]
+    user_id = update.effective_user.id
+    if is_registered(user_id):
+        # Allaqachon ro'yxatdan o'tgan
+        users = load_users()
+        lang = users[str(user_id)].get("lang", "uz")
+        context.user_data["lang"] = lang
+        await show_categories(update, context, lang)
+        return ConversationHandler.END
+
+    # Til tanlash
+    keyboard = [[InlineKeyboardButton(label, callback_data=f"reglang_{code}")] for code, label in LANGUAGES.items()]
     await update.message.reply_text(t("welcome", "uz"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return REG_LANG
+
+async def reg_lang_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lang = query.data.split("_", 1)[1]
+    context.user_data["lang"] = lang
+    context.user_data["reg"] = {"lang": lang}
+    await query.edit_message_text(t("ask_first_name", lang))
+    return REG_FIRST_NAME
+
+async def reg_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(context)
+    context.user_data["reg"]["first_name"] = update.message.text.strip()
+    await update.message.reply_text(t("ask_last_name", lang))
+    return REG_LAST_NAME
+
+async def reg_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(context)
+    context.user_data["reg"]["last_name"] = update.message.text.strip()
+    await update.message.reply_text(t("ask_phone", lang))
+    return REG_PHONE
+
+async def reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(context)
+    phone = update.message.text.strip()
+    # Telefon raqam tekshirish
+    if not re.match(r'^\+?[\d\s\-]{7,15}$', phone):
+        await update.message.reply_text(t("invalid_phone", lang))
+        return REG_PHONE
+
+    reg = context.user_data["reg"]
+    reg["phone"] = phone
+    reg["telegram_id"] = update.effective_user.id
+    reg["username"] = update.effective_user.username or ""
+    reg["registered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Saqlash
+    users = load_users()
+    users[str(update.effective_user.id)] = reg
+    save_users(users)
+
+    await update.message.reply_text(
+        f"{t('reg_done', lang)}\n\n"
+        f"👤 {reg['first_name']} {reg['last_name']}\n"
+        f"📱 {phone}",
+    )
+    await show_categories(update, context, lang)
+    return ConversationHandler.END
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KATALOG
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def show_categories(update, context, lang=None):
     if lang is None:
@@ -73,7 +164,7 @@ async def show_categories(update, context, lang=None):
     else:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data_str = query.data
@@ -83,6 +174,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data_str.startswith("lang_"):
         lang = data_str.split("_", 1)[1]
         context.user_data["lang"] = lang
+        # Saqlash
+        users = load_users()
+        uid = str(update.effective_user.id)
+        if uid in users:
+            users[uid]["lang"] = lang
+            save_users(users)
         await show_categories(update, context, lang)
         return
 
@@ -112,7 +209,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat_id = context.user_data.get("current_cat")
         if cat_id:
             query.data = f"cat_{cat_id}"
-            await callback_handler(update, context)
+            await catalog_callback(update, context)
         return
 
     if data_str.startswith("prod_"):
@@ -138,7 +235,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(caption, parse_mode="HTML", reply_markup=keyboard)
         return
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADMIN PANEL
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def is_admin(update):
     return update.effective_user.id == ADMIN_ID
@@ -151,15 +250,21 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_admin_panel(update, context, edit=False):
     db = load_data()
+    users = load_users()
     cat_count = len(db["categories"])
     prod_count = sum(len(v) for v in db["products"].values())
-    text = f"🛠 <b>Admin Panel</b>\n\n📦 Kategoriyalar: <b>{cat_count}</b>\n🛒 Mahsulotlar: <b>{prod_count}</b>"
+    user_count = len(users)
+    text = (f"🛠 <b>Admin Panel</b>\n\n"
+            f"👥 Foydalanuvchilar: <b>{user_count}</b>\n"
+            f"📦 Kategoriyalar: <b>{cat_count}</b>\n"
+            f"🛒 Mahsulotlar: <b>{prod_count}</b>")
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Kategoriya qo'shish", callback_data="admin_add_cat")],
         [InlineKeyboardButton("➕ Mahsulot qo'shish", callback_data="admin_add_item")],
         [InlineKeyboardButton("🗑 Kategoriya o'chirish", callback_data="admin_del_cat")],
         [InlineKeyboardButton("🗑 Mahsulot o'chirish", callback_data="admin_del_item")],
         [InlineKeyboardButton("📋 Barchasini ko'rish", callback_data="admin_view_all")],
+        [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="admin_view_users")],
     ])
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -211,7 +316,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cat_id in db["products"]:
             del db["products"][cat_id]
         save_data(db)
-        await query.edit_message_text(f"✅ <b>{cat_name}</b> kategoriyasi o'chirildi!\n\n/admin", parse_mode="HTML")
+        await query.edit_message_text(f"✅ <b>{cat_name}</b> o'chirildi!\n\n/admin", parse_mode="HTML")
         return
 
     if data_str == "admin_del_item":
@@ -259,6 +364,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not prods:
                 text += "  └ (mahsulot yo'q)\n"
             text += "\n"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_back")]])
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        return
+
+    if data_str == "admin_view_users":
+        users = load_users()
+        if not users:
+            await query.edit_message_text("👥 Hali foydalanuvchi yo'q!\n\n/admin")
+            return
+        text = f"👥 <b>Foydalanuvchilar ({len(users)}):</b>\n\n"
+        for uid, u in list(users.items())[-20:]:
+            text += (f"👤 {u.get('first_name','')} {u.get('last_name','')}\n"
+                     f"   📱 {u.get('phone','')}\n"
+                     f"   📅 {u.get('registered_at','')}\n\n")
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_back")]])
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         return
@@ -374,12 +493,27 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Bekor qilindi.\n\n/admin")
     return ConversationHandler.END
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
     TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
     app = Application.builder().token(TOKEN).build()
 
+    # Ro'yxatdan o'tish conversation
+    reg_conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            REG_LANG:       [CallbackQueryHandler(reg_lang_chosen, pattern="^reglang_")],
+            REG_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_first_name)],
+            REG_LAST_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_last_name)],
+            REG_PHONE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_phone)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # Kategoriya qo'shish
     cat_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_callback, pattern="^admin_add_cat$")],
         states={
@@ -390,6 +524,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    # Mahsulot qo'shish
     item_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_callback, pattern="^acat_")],
         states={
@@ -411,12 +546,12 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(reg_conv)
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(cat_conv)
     app.add_handler(item_conv)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(CallbackQueryHandler(catalog_callback))
 
     print("✅ Bot ishga tushdi...")
     app.run_polling()
